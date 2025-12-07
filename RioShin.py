@@ -1,250 +1,145 @@
-# RioShin.py — Telegram File Sequencing Bot (Fully Fixed)
-
-import logging
+# RioShin.py - Full Telegram File Sequencing Bot with IMAGE start
+import os
 import sqlite3
-from contextlib import closing
+from pathlib import Path
+from aiogram import Bot, Dispatcher, types
+from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
+from aiogram.filters import Command
+from aiogram.utils.keyboard import InlineKeyboardBuilder
+from aiogram.types.message import ContentType
+from aiogram.types import InputFile
+from aiogram import F
+from aiogram.fsm.storage.memory import MemoryStorage
+from aiogram.fsm.context import FSMContext
 
-from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
-from telegram.ext import (
-    ApplicationBuilder,
-    CommandHandler,
-    MessageHandler,
-    CallbackQueryHandler,
-    ContextTypes,
-    filters,
-)
-
+# Load config
 from config import BOT_TOKEN, DB_PATH
 
-logging.basicConfig(level=logging.INFO)
-logger = logging.getLogger(__name__)
+bot = Bot(token=BOT_TOKEN)
+dp = Dispatcher(storage=MemoryStorage())
 
-
-# ---------------------------------------------------------
-# DATABASE SETUP
-# ---------------------------------------------------------
-
-def init_db():
-    """Initializes SQLite tables."""
-    with closing(sqlite3.connect(DB_PATH)) as conn:
-        conn.executescript(
-            """
-            PRAGMA foreign_keys = ON;
-
-            CREATE TABLE IF NOT EXISTS users (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                telegram_id INTEGER UNIQUE NOT NULL
-            );
-
-            CREATE TABLE IF NOT EXISTS sequences (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                user_id INTEGER NOT NULL,
-                status TEXT NOT NULL,
-                FOREIGN KEY(user_id) REFERENCES users(id)
-            );
-
-            CREATE TABLE IF NOT EXISTS files (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                sequence_id INTEGER NOT NULL,
-                file_type TEXT NOT NULL,
-                file_id TEXT NOT NULL,
-                position INTEGER NOT NULL,
-                FOREIGN KEY(sequence_id) REFERENCES sequences(id)
-            );
-            """
+# Ensure DB exists
+db_path = Path(DB_PATH)
+if not db_path.exists():
+    conn = sqlite3.connect(DB_PATH)
+    c = conn.cursor()
+    c.execute("""
+        CREATE TABLE IF NOT EXISTS files (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            chat_id INTEGER,
+            file_id TEXT,
+            caption TEXT,
+            file_name TEXT,
+            order_num INTEGER
         )
-        conn.commit()
-
-
-def get_user(conn, tg_id):
-    """Fetches or creates a user."""
-    cur = conn.cursor()
-    cur.execute("SELECT id FROM users WHERE telegram_id=?", (tg_id,))
-    r = cur.fetchone()
-
-    if r:
-        return r[0]
-
-    cur.execute("INSERT INTO users (telegram_id) VALUES (?)", (tg_id,))
+    """)
     conn.commit()
-    return cur.lastrowid
+    conn.close()
 
-
-# ---------------------------------------------------------
-# COMMAND HANDLERS
-# ---------------------------------------------------------
-
-async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    kb = [
-        [
-            InlineKeyboardButton("About", callback_data="about"),
-            InlineKeyboardButton("Developer", callback_data="dev"),
-        ],
-        [InlineKeyboardButton("BotsKingdoms", url="https://t.me/botskingdoms")]
-    ]
-
-    await update.message.reply_text(
-        "Welcome to RioShin Bot!",
-        reply_markup=InlineKeyboardMarkup(kb)
+# ---------------- /start Handler ----------------
+@dp.message(Command("start"))
+async def start_cmd(msg: types.Message):
+    image_url = "https://i.postimg.cc/7ZkqjJf5/rio-start-banner.jpg"  # Change to your own banner
+    
+    kb = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="About", callback_data="about")],
+        [InlineKeyboardButton(text="Developer", url="https://t.me/RioShin")],
+        [InlineKeyboardButton(text="BotsKingdoms", url="https://t.me/botskingdoms")]
+    ])
+    
+    await msg.answer_photo(
+        photo=image_url,
+        caption=(
+            "✨ **RioShin Bot**\n"
+            "Sequence your files perfectly — auto ordered, auto clean.\n\n"
+            "🔹 Use /ssequence to start\n"
+            "🔹 Send files\n"
+            "🔹 Use /esequence to finish\n\n"
+            "Powered by **BotsKingdoms**"
+        ),
+        reply_markup=kb
     )
 
+# ---------------- About Callback ----------------
+@dp.callback_query(lambda c: c.data == "about")
+async def about_cb(call: types.CallbackQuery):
+    await call.message.answer(
+        "📄 **About RioShin Bot**\n\n"
+        "This bot helps you sequence files in order and manage them easily.\n"
+        "Send multiple files, start sequencing with /ssequence, "
+        "then finish with /esequence to get everything neatly ordered."
+    )
+    await call.answer()
 
-# ---------------------------------------------------------
-# BUTTON HANDLER
-# ---------------------------------------------------------
+# ---------------- Start Sequence ----------------
+@dp.message(Command("ssequence"))
+async def start_sequence(msg: types.Message):
+    await msg.answer("🟢 Sequence started! Now send your files one by one. They will be saved in order.")
 
-async def buttons(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    q = update.callback_query
-    await q.answer()
-
-    if q.data == "about":
-        await q.edit_message_text(
-            "🤖 **RioShin Bot**\n"
-            "Sequences your files in perfect order.\n\n"
-            "👑 **Owner & Dev:** @Rioshin"
-        )
-
-    elif q.data == "dev":
-        await q.edit_message_text(
-            "Developer:\nhttps://t.me/Rioshin"
-        )
-
-
-# ---------------------------------------------------------
-# SEQUENCE START
-# ---------------------------------------------------------
-
-async def sseq(update: Update, ctx):
-    tg = update.effective_user
-
-    with closing(sqlite3.connect(DB_PATH)) as conn:
-        uid = get_user(conn, tg.id)
-        conn.execute(
-            "INSERT INTO sequences (user_id, status) VALUES (?, 'open')",
-            (uid,)
-        )
-        conn.commit()
-
-    await update.message.reply_text("📥 Sequence started — now send files.")
-
-
-# ---------------------------------------------------------
-# SEQUENCE END
-# ---------------------------------------------------------
-
-async def eseq(update: Update, ctx):
-    tg = update.effective_user
-    chat = update.effective_chat.id
-
-    with closing(sqlite3.connect(DB_PATH)) as conn:
-        uid = get_user(conn, tg.id)
-
-        seq = conn.execute(
-            "SELECT id FROM sequences WHERE user_id=? AND status='open'",
-            (uid,)
-        ).fetchone()
-
-        if not seq:
-            return await update.message.reply_text("❌ No open sequence.")
-
-        seq_id = seq[0]
-
-        files = conn.execute(
-            "SELECT file_type, file_id FROM files WHERE sequence_id=? ORDER BY position ASC",
-            (seq_id,)
-        ).fetchall()
-
-        conn.execute(
-            "UPDATE sequences SET status='completed' WHERE id=?",
-            (seq_id,)
-        )
-        conn.commit()
-
+# ---------------- End Sequence ----------------
+@dp.message(Command("esequence"))
+async def end_sequence(msg: types.Message):
+    conn = sqlite3.connect(DB_PATH)
+    c = conn.cursor()
+    c.execute("SELECT file_id, caption, file_name FROM files WHERE chat_id=? ORDER BY order_num ASC", (msg.chat.id,))
+    files = c.fetchall()
+    
+    if not files:
+        await msg.answer("❌ No files found to sequence. Use /ssequence and send files first.")
+        conn.close()
+        return
+    
     # Send files in order
-    for t, f in files:
-        if t == "document":
-            await ctx.bot.send_document(chat, f)
-        elif t == "video":
-            await ctx.bot.send_video(chat, f)
-        elif t == "audio":
-            await ctx.bot.send_audio(chat, f)
-        elif t == "voice":
-            await ctx.bot.send_voice(chat, f)
+    for file_id, caption, file_name in files:
+        await msg.answer_document(document=file_id, caption=caption or file_name)
+    
+    # Clean up
+    c.execute("DELETE FROM files WHERE chat_id=?", (msg.chat.id,))
+    conn.commit()
+    conn.close()
+    await msg.answer("✅ Sequence finished! All files sent in order.")
 
-    await update.message.reply_text("✅ Sequence complete!")
+# ---------------- Save Files ----------------
+@dp.message(F.content_type.in_([ContentType.DOCUMENT, ContentType.PHOTO]))
+async def save_file(msg: types.Message):
+    conn = sqlite3.connect(DB_PATH)
+    c = conn.cursor()
+    
+    # Determine file type
+    if msg.document:
+        file_id = msg.document.file_id
+        file_name = msg.document.file_name
+    elif msg.photo:
+        file_id = msg.photo[-1].file_id
+        file_name = "Photo"
+    else:
+        return
+    
+    # Get last order number
+    c.execute("SELECT MAX(order_num) FROM files WHERE chat_id=?", (msg.chat.id,))
+    last_order = c.fetchone()[0] or 0
+    order_num = last_order + 1
+    
+    # Insert file
+    c.execute(
+        "INSERT INTO files (chat_id, file_id, caption, file_name, order_num) VALUES (?, ?, ?, ?, ?)",
+        (msg.chat.id, file_id, msg.caption, file_name, order_num)
+    )
+    conn.commit()
+    conn.close()
+    
+    await msg.answer(f"✅ File saved! Position in sequence: {order_num}")
 
-
-# ---------------------------------------------------------
-# MEDIA HANDLER
-# ---------------------------------------------------------
-
-async def media(update: Update, ctx):
-    msg = update.message
-    tg = update.effective_user
-
-    with closing(sqlite3.connect(DB_PATH)) as conn:
-        uid = get_user(conn, tg.id)
-
-        seq = conn.execute(
-            "SELECT id FROM sequences WHERE user_id=? AND status='open'",
-            (uid,)
-        ).fetchone()
-
-        if not seq:
-            return await msg.reply_text("Start a sequence first → /ssequence")
-
-        seq_id = seq[0]
-
-        # Detect file type
-        if msg.document:
-            t, f = "document", msg.document.file_id
-        elif msg.video:
-            t, f = "video", msg.video.file_id
-        elif msg.audio:
-            t, f = "audio", msg.audio.file_id
-        elif msg.voice:
-            t, f = "voice", msg.voice.file_id
-        else:
-            return await msg.reply_text("❌ Unsupported file type.")
-
-        # Assign position
-        cur = conn.cursor()
-        cur.execute(
-            "SELECT COALESCE(MAX(position), 0) + 1 FROM files WHERE sequence_id=?",
-            (seq_id,)
-        )
-        pos = cur.fetchone()[0]
-
-        conn.execute(
-            "INSERT INTO files (sequence_id, file_type, file_id, position) VALUES (?,?,?,?)",
-            (seq_id, t, f, pos)
-        )
-        conn.commit()
-
-    await msg.reply_text(f"✔ Added at position **{pos}**")
-
-
-# ---------------------------------------------------------
-# MAIN APP START
-# ---------------------------------------------------------
-
-def main():
-    init_db()
-    app = ApplicationBuilder().token(BOT_TOKEN).build()
-
-    app.add_handler(CommandHandler("start", start))
-    app.add_handler(CommandHandler("ssequence", sseq))
-    app.add_handler(CommandHandler("esequence", eseq))
-    app.add_handler(CallbackQueryHandler(buttons))
-
-    # Media should come before command fallback
-    app.add_handler(MessageHandler(filters.ALL & ~filters.COMMAND, media))
-
-    # Unknown command reply
-    app.add_handler(MessageHandler(filters.COMMAND, lambda u, c: u.message.reply_text("Unknown command ❔")))
-
-    app.run_polling()
-
-
+# ---------------- Run Bot ----------------
 if __name__ == "__main__":
-    main()
+    import asyncio
+    from aiogram import exceptions
+    
+    async def main():
+        try:
+            print("🚀 Bot started...")
+            await dp.start_polling(bot)
+        except exceptions.TelegramAPIError as e:
+            print("Telegram API Error:", e)
+    
+    asyncio.run(main())
