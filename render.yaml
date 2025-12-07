@@ -1,10 +1,31 @@
 services:
-  - type: worker
-    name: rioshin-bot
+  - type: web
+    name: your-bot-name
     env: python
-    autoDeploy: true
-    buildCommand: "pip install -r requirements.txt"
-    startCommand: "python RioShin.py"
-    envVars:
-      - key: BOT_TOKEN
-        sync: false
+    plan: starter
+    buildCommand: |
+      echo "Step 0: Setup environment variables for Rust"
+      export CARGO_HOME=$HOME/.cargo
+      export RUSTUP_HOME=$HOME/.rustup
+      export PATH=$CARGO_HOME/bin:$PATH
+
+      echo "Step 1: Upgrade pip"
+      pip install --upgrade pip
+
+      echo "Step 2: Install build dependencies"
+      pip install --upgrade wheel setuptools maturin
+
+      echo "Step 3: Install Python requirements with verbose logging"
+      pip install -r requirements.txt -v > /tmp/pip-install.log 2>&1 || \
+      (echo "Pip install failed, see /tmp/pip-install.log"; cat /tmp/pip-install.log; exit 1)
+
+      echo "Step 4: Done building"
+
+    startCommand: |
+      echo "Starting bot..."
+      python RioShin.py
+
+    cacheDirectories:
+      - $HOME/.cargo
+      - $HOME/.rustup
+      - $HOME/.cache/pip
