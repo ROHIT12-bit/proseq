@@ -1,10 +1,10 @@
 services:
   - type: web
-    name: your-bot-name
+    name: proseq
     env: python
-    plan: starter
+    plan: free
     buildCommand: |
-      echo "Step 0: Setup environment variables for Rust"
+      echo "Step 0: Setup writable Rust environment"
       export CARGO_HOME=$HOME/.cargo
       export RUSTUP_HOME=$HOME/.rustup
       export PATH=$CARGO_HOME/bin:$PATH
@@ -12,7 +12,7 @@ services:
       echo "Step 1: Upgrade pip"
       pip install --upgrade pip
 
-      echo "Step 2: Install build dependencies"
+      echo "Step 2: Install Rust build dependencies"
       pip install --upgrade wheel setuptools maturin
 
       echo "Step 3: Install Python requirements with verbose logging"
@@ -25,6 +25,7 @@ services:
       echo "Starting bot..."
       python RioShin.py
 
+    # Cache Rust and pip directories to speed up next deploys
     cacheDirectories:
       - $HOME/.cargo
       - $HOME/.rustup
