@@ -1,0 +1,10 @@
+services:
+  - type: worker
+    name: rioshin-bot
+    env: python
+    autoDeploy: true
+    buildCommand: "pip install -r requirements.txt"
+    startCommand: "python RioShin.py"
+    envVars:
+      - key: BOT_TOKEN
+        sync: false
